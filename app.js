@@ -100,6 +100,9 @@ function renderNext(p, perf, stats) {
     el("div", { class: "pickrow" }, el("span", { class: `orb ${p.color.toLowerCase()} ${none ? "dim" : ""}` }),
       el("div", {}, el("div", { class: "pickname" }, p.color), el("div", { class: "muted" }, `for round ${p.target_period || "#" + p.target_seq}`),
         el("div", { style: "margin-top:8px" }, signalBadge(sig)))),
+    p.color_probs ? el("div", {}, el("div", { class: "bar-note" }, "Estimated chance of each colour (an uncertain estimate, not a validated forecast):"),
+      GROUPS.map(g => meter(g, p.color_probs[g], g.toLowerCase()))) : null,
+    el("p", { class: "bar-note" }, `Model v${p.engine_version} · trained on ${p.n_history} rounds · built after confirmed round ${p.latest_result ? (p.latest_result.period_id || "#" + p.latest_result.seq) : "—"} · status: ${p.status}${p.created_at ? " · saved " + String(p.created_at).replace("T", " ").slice(0, 19) + " UTC" : ""}`),
     none ? el("div", { class: "nosig" }, el("strong", {}, "No proven edge. "), "On rounds it had not seen, this pick did no better than guessing a colour at random.") : null,
     el("details", {}, el("summary", { class: "muted" }, "Why this label?"),
       el("ul", { class: "muted" }, (sig.reasons.length ? sig.reasons : ["Evidence rules satisfied — see the Accuracy tab."]).map(r => el("li", {}, r)),
@@ -122,13 +125,93 @@ function renderNext(p, perf, stats) {
     setBody($("#mix"), ...GROUPS.map(g => meter(g, stats.color_groups[g] / stats.n, g.toLowerCase(), `expected ${pct(exp[g])}`)));
   }
 }
+const SYNC_TEXT = { ok: "Connected and up to date", stale: "Connected, but no new data for a while", error: "Cannot read the data source",
+  disabled: "Automatic sync is off", not_configured: "No data source configured", needs_anchor: "Needs a starting round ID",
+  gap_blocked: "Paused: rounds are missing", rejected: "Data rejected by validation", starting: "Starting…" };
+const fmtAge = sec => (sec < 90 ? `${sec} s` : sec < 5400 ? `${Math.round(sec / 60)} min` : `${(sec / 3600).toFixed(1)} h`);
+const numPill = n => el("span", { class: "pill" }, dot(n), `${n} · ${COLOR_DETAIL[n]} · ${n >= 5 ? "Big" : "Small"}`);
+function showConn(kind, text) { const c = $("#conn"); c.className = `conn ${kind}`; c.textContent = text; c.hidden = false; }
+function hideConn() { $("#conn").hidden = true; }
+function stateBanner(st) {
+  const warn = ["stale", "error", "gap_blocked", "needs_anchor", "rejected"];
+  if (st && st.enabled && warn.includes(st.state)) showConn("warn", `${SYNC_TEXT[st.state]}${st.last_error ? ": " + st.last_error : ""}`);
+  else hideConn();
+}
+async function syncNow() {
+  try { await api("/api/sync/run", { method: "POST" }); } catch (e) { showConn("warn", e.message); return; }
+  refreshAll();
+}
+function renderSync(st, latest) {
+  const lc = st.latest_confirmed, age = st.seconds_since_success;
+  const rows = [["Status", SYNC_TEXT[st.state] || st.state], ["Latest confirmed round", lc ? (lc.period_id || "#" + lc.seq) : "—"],
+    ["Latest actual result", latest ? numPill(latest.number) : "—"], ["Next expected round", st.expected_next_round || "—"],
+    ["Last successful sync", age == null ? "never" : `${fmtAge(age)} ago`], ["Rounds synced so far", String(st.ingested_total)]];
+  setBody($("#sync"), el("dl", { class: "kv" }, rows.flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)])),
+    st.last_error ? el("div", { class: "verdict" }, st.last_error) : null,
+    st.enabled ? el("button", { class: "btn ghost", type: "button", onclick: syncNow }, "Sync now")
+      : el("p", { class: "bar-note" }, "Automatic sync is off. Add rounds by hand on the Add rounds tab, or configure an authorized source in backend/.env (see README)."));
+}
+
+function renderColourEval(bt) {
+  const card = $("#coloureval"), e = bt && bt.colour_eval;
+  if (!e) { setBody(card, el("p", { class: "muted" }, "Not computed yet. Press “Re-run validation on all stored data” in the box above.")); return; }
+  const k = (label, value, note) => el("div", { class: "kpi" }, el("span", {}, label), el("b", {}, value), el("i", {}, note));
+  const table = (head, rows) => el("div", { class: "tablewrap" }, el("table", {}, el("thead", {}, el("tr", {}, head.map(h => el("th", {}, h)))),
+    el("tbody", {}, rows.map(r => el("tr", {}, r.map(c => el("td", {}, c)))))));
+  const skill = e.brier_skill;
+  setBody(card,
+    el("div", { class: "kpis" }, k("Accuracy", pct(e.accuracy), `random guess: 40% · ${e.n} unseen rounds`),
+      k("Brier score", e.brier.toFixed(4), `fair-game prior: ${e.brier_prior.toFixed(4)}`),
+      k("Brier skill", (skill * 100).toFixed(2) + "%", skill > 0 ? "better than the prior" : "not better than the prior"),
+      k("Calibration error", pct(e.ece), "average gap between confidence and hit rate")),
+    el("p", { class: "bar-note" }, "Prior = Green 40%, Red 40%, Violet 20% (a fair game). Skill below 0% means the probabilities were worse than that."),
+    el("h3", {}, "Per colour"), table(["Colour", "Precision", "Recall", "Rounds"], e.classes.map((c, i) => [c, pct(e.precision[i]), pct(e.recall[i]), String(e.support[i])])),
+    el("h3", {}, "Confusion matrix (rows = actual, columns = picked)"), table(["", ...e.classes], e.confusion.map((r, i) => [e.classes[i], ...r.map(String)])),
+    el("h3", {}, "Calibration (lowest to highest confidence)"), table(["Rounds", "Average confidence", "Actually correct"], e.calibration.map(b => [String(b.n), pct(b.mean_confidence), pct(b.observed_accuracy)])));
+}
+
+let lastSeen = null, lastLatest = null, pollMs = 30000;
 async function loadDash() {
   try {
-    const [p, r, perf, stats] = await Promise.all([api("/api/prediction/next"), api("/api/results?limit=40"), api("/api/model-performance"),
-      api("/api/data/stats").catch(() => null)]);
-    perfCache = perf; renderNext(p, perf, stats);
+    const [p, r, perf, stats, sync] = await Promise.all([api("/api/prediction/next"), api("/api/results?limit=40"), api("/api/model-performance"),
+      api("/api/data/stats").catch(() => null), api("/api/sync/status").catch(() => null)]);
+    perfCache = perf; renderNext(p, perf, stats); lastLatest = r.results[0] || null;
+    lastSeen = `${lastLatest ? lastLatest.seq : 0}|${sync ? sync.expected_next_round : "-"}`;
+    if (sync) { renderSync(sync, lastLatest); stateBanner(sync); } else hideConn();
     clear($("#strip")).append(...r.results.slice().reverse().map(x => dot(x.number)));
-  } catch (e) { $("#pick").append(el("p", { class: "msg err" }, e.message)); }
+    $("#updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
+  } catch (e) { showConn("bad", `Cannot load data: ${e.message}. Showing the last data received.`); }
+}
+async function refreshAll() {
+  const b = $("#refresh"); b.disabled = true; b.textContent = "Refreshing…";
+  try { await Promise.all([loadStatus(), loadDash()]); } finally { b.disabled = false; b.textContent = "Refresh"; }
+}
+async function poll() {                                     // light check; reloads everything only when something changed
+  if (typeof document !== "undefined" && document.hidden) return;
+  try {
+    const [sync, r] = await Promise.all([api("/api/sync/status"), api("/api/results?limit=1")]);
+    const latest = r.results[0] || null, key = `${latest ? latest.seq : 0}|${sync.expected_next_round}`;
+    if (lastSeen !== null && key !== lastSeen) { await refreshAll(); return; }
+    renderSync(sync, latest || lastLatest); stateBanner(sync);
+  } catch (e) { showConn("bad", "Disconnected from the server. Showing the last data received; retrying automatically."); }
+}
+async function startPolling() {
+  try { const h = await api("/api/health"); pollMs = Math.max(10, h.poll_seconds || 30) * 1000; } catch (_) { /* keep default */ }
+  setInterval(poll, pollMs);
+}
+
+function renderColourAnalysis(c) {
+  const tbl = (head, rows) => el("div", { class: "tablewrap" }, el("table", {}, el("thead", {}, el("tr", {}, head.map(h => el("th", {}, h)))),
+    el("tbody", {}, rows.map(r => el("tr", {}, r.map(x => el("td", {}, x)))))));
+  const W = Object.values(c.windows);
+  setBody($("#colour-windows"), tbl(["Rounds", "Green", "Red", "Violet", "p vs fair game"],
+    [["all " + c.n, ...c.overall_share.map(pct), "—"], ...W.map(w => ["last " + w.n, ...w.share.map(pct), w.p_vs_fair == null ? "too few" : w.p_vs_fair.toFixed(3)])]),
+    el("p", { class: "bar-note" }, "Fair game = Green 40%, Red 40%, Violet 20%. A p-value under 0.05 is unusual, but with several windows checked one or two are expected by chance. A colour that has been absent for a while is not “due”."));
+  const t = c.transitions, st = c.streaks;
+  setBody($("#colour-trans"), tbl(["After ↓ / next →", ...c.classes], t.probabilities.map((row, i) => [c.classes[i], ...(row || [null, null, null]).map((v, j) => `${pct(v)} (${t.counts[i][j]})`)])),
+    el("p", { class: "bar-note" }, t.p_independent == null ? "Not enough data for an independence test."
+      : `Independence test p = ${t.p_independent.toFixed(3)} — ${t.p_independent < 0.05 ? "the next colour may depend on the previous one; check it on new data before trusting it" : "no evidence that the next colour depends on the previous one"}.`),
+    el("p", { class: "bar-note" }, `Current streak: ${st.current.length} × ${st.current.colour}. Longest streaks: ${Object.entries(st.longest).map(([k, v]) => `${k} ${v}`).join(", ")}.`));
 }
 
 /* ---------------------------------------------------------------- history */
@@ -171,7 +254,7 @@ function runBtn() {
     b.disabled = true; try { await api("/api/backtest/run", { method: "POST" }); b.textContent = "Running… (1–2 min)"; pollStatus(); } catch (e) { b.disabled = false; alert(e.message); } } }, "Re-run validation on all stored data");
   return b;
 }
-async function loadPerf() { perfCache = await api("/api/model-performance"); renderPerf(perfCache); }
+async function loadPerf() { perfCache = await api("/api/model-performance"); renderPerf(perfCache); renderColourEval(perfCache.backtest); }
 
 /* ---------------------------------------------------------------- analysis */
 let statsCache = null;
@@ -191,6 +274,7 @@ async function loadAnalysis() {
     el("tbody", {}, Object.values(a.tests).map(t => el("tr", {}, el("td", {}, t.name), el("td", {}, t.p != null ? t.p.toFixed(3) : `${t.value.toFixed(3)} (±${t.band.toFixed(3)})`),
       el("td", {}, t.verdict || (t.within_band ? "consistent with random" : "unusual - verify data"), t.note ? el("div", { class: "muted", style: "font-size:11px" }, t.note) : null)))))),
     el("p", { class: "bar-note" }, a.interpretation), el("div", { id: "tests" }));
+  if (a.colour && a.colour.windows) renderColourAnalysis(a.colour);
   const q = a.data_quality;
   clear($("#dq")).append(el("dl", { class: "kv" }, ...Object.entries({ "Total records": q.total, "Unique period IDs": q.unique_periods ?? "—", "Missing period IDs": q.missing_period ?? "—", "Missing timestamps": q.missing_timestamp ?? "—",
     "Duplicate periods": q.duplicate_periods ?? "—", "Chronological (by period)": q.chronological == null ? "cannot verify (no period IDs)" : q.chronological ? "yes" : "NO", "Longest same-number streak": a.max_same_number_streak }).flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)])));
@@ -257,6 +341,7 @@ function init() {
   });
   $("#more").onclick = () => loadHistory(false);
   $("#win").onchange = renderRecentFreq;
-  buildPad(); pollStatus(); loadDash();
+  $("#refresh").onclick = () => refreshAll();
+  buildPad(); pollStatus(); loadDash(); startPolling();
 }
 if (typeof document !== "undefined" && document.getElementById) init();
