@@ -4,14 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WinGo Colour Lab</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 <header class="top">
   <div class="brand"><span class="logo"><i class="g"></i><i class="r"></i><i class="v"></i></span><div><h1>WinGo Colour Lab</h1><p>Colour analysis tested on unseen history</p></div></div>
-  <div class="status" id="status">connecting…</div>
+  <div class="tools"><span id="updated" class="muted"></span><button class="btn ghost" id="refresh" type="button">Refresh</button><div class="status" id="status">connecting…</div></div>
 </header>
 <div class="banner" role="note"><strong>Honest note.</strong> The pick below is a statistical guess. Testing on unseen rounds shows it is no better than guessing a colour at random, so treat it as a coin flip. No tool can guarantee a win; this one places no bets.</div>
+<div id="conn" class="conn" role="status" hidden></div>
 <nav class="tabs" id="tabs">
   <button data-tab="dash" class="on">Predict</button><button data-tab="history">History</button>
   <button data-tab="perf">Accuracy</button><button data-tab="analysis">Data</button><button data-tab="add">Add rounds</button>
@@ -22,6 +23,7 @@
     <article class="card hero" id="pick"><h2>Next colour</h2><div class="skeleton">loading…</div></article>
     <article class="card" id="reality"><h2>Reality check <small>colour accuracy on rounds the model had not seen</small></h2><div class="skeleton">loading…</div></article>
   </div>
+  <article class="card" id="sync"><h2>Live data sync <small>server-side, works with the browser closed</small></h2><div class="skeleton">loading…</div></article>
   <article class="card"><h2>Last 40 rounds <small>oldest → newest, hover for the number</small></h2><div id="strip" class="strip"></div></article>
   <div class="grid two">
     <article class="card" id="mix"><h2>Colour mix <small>share of all stored rounds</small></h2><div class="skeleton">loading…</div></article>
@@ -36,6 +38,7 @@
 <section id="tab-perf" class="tab">
   <article class="card" id="perf-live"><h2>Live accuracy <small>picks made before the result arrived</small></h2><div class="skeleton">loading…</div></article>
   <article class="card" id="perf-bt"><h2>Walk-forward test <small>each round predicted using only earlier rounds</small></h2><div class="skeleton">loading…</div></article>
+  <article class="card" id="coloureval"><h2>Colour evaluation <small>probability quality on unseen rounds</small></h2><div class="skeleton">loading…</div></article>
   <div class="grid two"><article class="card"><h2>Accuracy over time <small>rolling 100 · vs random</small></h2><div id="chart-roll"></div></article>
   <article class="card"><h2>Live accuracy over time</h2><div id="chart-live"></div></article></div>
 </section>
@@ -43,6 +46,8 @@
   <div class="grid two"><article class="card"><h2>Number distribution <small>dashed = 10% expected</small></h2><div id="chart-dist"></div></article>
   <article class="card"><h2>Recent frequency <select id="win"><option>20</option><option selected>50</option><option>100</option></select></h2><div id="chart-recent"></div></article></div>
   <div class="grid two"><article class="card"><h2>Big / Small</h2><div id="chart-bs"></div></article><article class="card"><h2>Colour</h2><div id="chart-color"></div></article></div>
+  <article class="card" id="colour-windows"><h2>Colour shares by window <small>vs the fair game 40 / 40 / 20</small></h2><div class="skeleton">open this tab to load</div></article>
+  <article class="card" id="colour-trans"><h2>Colour transitions &amp; streaks <small>what followed each colour</small></h2><div class="skeleton">open this tab to load</div></article>
   <article class="card"><h2>Randomness tests</h2><div id="tests"></div></article>
   <article class="card"><h2>Data quality</h2><div id="dq"></div></article>
 </section>
@@ -69,6 +74,6 @@
 </section>
 </main>
 <footer>Analysis only · no guarantee of any outcome · no betting, deposit or withdrawal features</footer>
-<script src="app.js"></script>
+<script src="js/app.js"></script>
 </body>
 </html>
