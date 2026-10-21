@@ -64,3 +64,12 @@ dl.kv{margin:0}
 .tools{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.tools .btn.ghost{margin-top:0;padding:6px 12px}
 .conn{margin:10px clamp(12px,4vw,32px) 0;padding:9px 14px;border-radius:6px;font-size:14px;border:1px solid}
 .conn[hidden]{display:none}.conn.bad{background:#f8e0dc;border-color:#e0aaa3;color:#7a2018}.conn.warn{background:#fbf1d3;border-color:#e3cf9a;color:#5c4710}
+
+/* Big / Small */
+.logo .g{background:#2f6f73}.logo .r{background:#b5812b}
+.chip{display:inline-grid;place-items:center;min-width:26px;height:26px;padding:0 6px;border-radius:6px;font:600 13px "Segoe UI",system-ui,sans-serif;color:#fff;background:#777}
+.chip.big{background:#2f6f73}.chip.small{background:#b5812b}.chip.wide{padding:0 12px;min-width:0}
+.orb.size{display:grid;place-items:center;border-radius:50%;color:#fff;font:700 19px "Segoe UI",system-ui,sans-serif;letter-spacing:.03em;border-width:3px}
+.orb.big{background:#2f6f73}.orb.small{background:#b5812b}
+.track i.big{background:#2f6f73}.track i.small{background:#b5812b}
+.strip{gap:5px}
