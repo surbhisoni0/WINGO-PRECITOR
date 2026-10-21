@@ -4,7 +4,7 @@ const $ = (s, r = document) => r.querySelector(s);
 const NS = "http://www.w3.org/2000/svg";
 const NAMES = { CumFreq: "Frequency", Recent50: "Recent pattern (50)", Markov1: "Transition (order 1)", Markov2: "Transition (order 2)",
   LogReg: "ML · Logistic regression", RandForest: "ML · Random forest", HistGB: "ML · Gradient boosting", Consensus: "Ensemble (unweighted consensus)" };
-const METRICS = [["color", "Colour"], ["bs", "Big/Small"], ["top1", "Number (Top-1)"], ["top3", "Number (Top-3)"]];
+const METRICS = [["bs", "Big / Small"], ["color", "Colour"], ["top1", "Number (Top-1)"], ["top3", "Number (Top-3)"]];
 const LINE_COLORS = { top1: "#2dd4bf", top3: "#5aa2ff", bs: "#f5b84b", color: "#b58cff" };
 const COLOR_DETAIL = ["red+violet", "green", "red", "green", "red", "green+violet", "red", "green", "red", "green"];
 
@@ -92,44 +92,48 @@ function pickFromScores(sc) {
   return GROUPS[t.indexOf(Math.max(...t))];
 }
 
+const SIZES = ["Small", "Big"];
+const sizeOf = n => (n >= 5 ? "Big" : "Small");
+const chip = n => el("span", { class: `chip ${sizeOf(n).toLowerCase()}`, title: `${n} · ${COLOR_DETAIL[n]} · ${sizeOf(n)}` }, String(n));
+const sizeChip = sz => el("span", { class: `chip wide ${sz.toLowerCase()}` }, sz);
+function pickSize(sc) { let sm = 0, bg = 0; sc.forEach((v, n) => { if (n >= 5) bg += v; else sm += v; }); return bg > sm ? "Big" : "Small"; }
+
 function renderNext(p, perf, stats) {
   const pick = $("#pick"), reality = $("#reality"), models = $("#models");
   if (!p.available) { [pick, reality, models].forEach(c => setBody(c, el("p", { class: "muted" }, p.reason))); return; }
-  const sig = p.signal, none = sig.level === "none", bt = perf && perf.backtest, c = bt && bt.consensus.color;
+  const sig = p.signal, none = sig.level === "none", bt = perf && perf.backtest, c = bt && bt.consensus.bs;
   setBody(pick,
-    el("div", { class: "pickrow" }, el("span", { class: `orb ${p.color.toLowerCase()} ${none ? "dim" : ""}` }),
-      el("div", {}, el("div", { class: "pickname" }, p.color), el("div", { class: "muted" }, `for round ${p.target_period || "#" + p.target_seq}`),
+    el("div", { class: "pickrow" }, el("span", { class: `orb size ${p.size.toLowerCase()} ${none ? "dim" : ""}` }, p.size.toUpperCase()),
+      el("div", {}, el("div", { class: "pickname" }, p.size), el("div", { class: "muted" }, `next round ${p.target_period || "#" + p.target_seq} · Big = 5–9, Small = 0–4`),
         el("div", { style: "margin-top:8px" }, signalBadge(sig)))),
-    p.color_probs ? el("div", {}, el("div", { class: "bar-note" }, "Estimated chance of each colour (an uncertain estimate, not a validated forecast):"),
-      GROUPS.map(g => meter(g, p.color_probs[g], g.toLowerCase()))) : null,
+    p.size_probs ? el("div", {}, el("div", { class: "bar-note" }, "Estimated chance (an uncertain estimate, not a validated forecast):"),
+      SIZES.map(g => meter(g, p.size_probs[g], g.toLowerCase()))) : null,
     el("p", { class: "bar-note" }, `Model v${p.engine_version} · trained on ${p.n_history} rounds · built after confirmed round ${p.latest_result ? (p.latest_result.period_id || "#" + p.latest_result.seq) : "—"} · status: ${p.status}${p.created_at ? " · saved " + String(p.created_at).replace("T", " ").slice(0, 19) + " UTC" : ""}`),
-    none ? el("div", { class: "nosig" }, el("strong", {}, "No proven edge. "), "On rounds it had not seen, this pick did no better than guessing a colour at random.") : null,
+    none ? el("div", { class: "nosig" }, el("strong", {}, "No proven edge. "), "On rounds it had not seen, this pick did no better than flipping a coin.") : null,
     el("details", {}, el("summary", { class: "muted" }, "Why this label?"),
       el("ul", { class: "muted" }, (sig.reasons.length ? sig.reasons : ["Evidence rules satisfied — see the Accuracy tab."]).map(r => el("li", {}, r)),
         sig.validated_on ? el("li", {}, `Tested on ${sig.validated_on.data_n} rounds (${sig.validated_on.run_at}).`) : null)),
     el("p", { class: "bar-note" }, p.disclaimer));
-  const live = perf && perf.live.metrics.color;
+  const live = perf && perf.live.metrics.bs;
   setBody(reality,
     meter("Your target", 0.8, "t"),
     meter(c ? `Measured on ${c.n} unseen rounds` : "Measured", c && c.rate, "", c ? `95% range ${pct(c.lo)} – ${pct(c.hi)}` : "No test yet — open the Accuracy tab and run the walk-forward test."),
-    meter("Random guess (always Green or Red)", 0.4, "b", "what you get with no information at all"),
+    meter("Coin flip (always Big, or always Small)", 0.5, "b", "what you get with no information at all"),
     live && live.n ? meter(`Live picks (${live.n})`, live.rate, "", live.n < 100 ? "fewer than 100 — too few to mean anything" : null) : null,
     c ? el("div", { class: "verdict" }, `${pct(c.rate)} measured. ${c.hi < 0.8 ? "80% is far outside that range. " : ""}${stats && stats.interpretation ? stats.interpretation : ""}`) : null);
-  const rows = Object.entries(p.model_scores).map(([k, sc]) => el("tr", {}, el("td", {}, NAMES[k] || k), el("td", {}, pill(pickFromScores(sc))),
-    el("td", {}, bt && bt.models[k] ? pct(bt.models[k].color.rate) : "—")));
-  rows.push(el("tr", {}, el("td", {}, el("strong", {}, NAMES.Consensus)), el("td", {}, pill(p.color)), el("td", {}, c ? pct(c.rate) : "—")));
+  const rows = Object.entries(p.model_scores).map(([k, sc]) => el("tr", {}, el("td", {}, NAMES[k] || k), el("td", {}, sizeChip(pickSize(sc))),
+    el("td", {}, bt && bt.models[k] ? pct(bt.models[k].bs.rate) : "—")));
+  rows.push(el("tr", {}, el("td", {}, el("strong", {}, NAMES.Consensus)), el("td", {}, sizeChip(p.size)), el("td", {}, c ? pct(c.rate) : "—")));
   setBody(models, el("div", { class: "tablewrap" }, el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Model"), el("th", {}, "Picks"), el("th", {}, "Past accuracy"))), el("tbody", {}, rows))),
-    el("p", { class: "bar-note" }, "Past accuracy is on unseen rounds. A random guess scores 40%."));
-  if (stats && stats.color_groups) {
-    const exp = { Green: 0.4, Red: 0.4, Violet: 0.2 };
-    setBody($("#mix"), ...GROUPS.map(g => meter(g, stats.color_groups[g] / stats.n, g.toLowerCase(), `expected ${pct(exp[g])}`)));
-  }
+    el("p", { class: "bar-note" }, "Past accuracy is on unseen rounds. A coin flip scores 50%."));
+  if (stats && stats.big_share != null) setBody($("#mix"), meter("Small", 1 - stats.big_share, "small", "expected 50%"), meter("Big", stats.big_share, "big", "expected 50%"));
 }
+
 const SYNC_TEXT = { ok: "Connected and up to date", stale: "Connected, but no new data for a while", error: "Cannot read the data source",
   disabled: "Automatic sync is off", not_configured: "No data source configured", needs_anchor: "Needs a starting round ID",
   gap_blocked: "Paused: rounds are missing", rejected: "Data rejected by validation", starting: "Starting…" };
 const fmtAge = sec => (sec < 90 ? `${sec} s` : sec < 5400 ? `${Math.round(sec / 60)} min` : `${(sec / 3600).toFixed(1)} h`);
-const numPill = n => el("span", { class: "pill" }, dot(n), `${n} · ${COLOR_DETAIL[n]} · ${n >= 5 ? "Big" : "Small"}`);
+const numPill = n => el("span", { class: "pill" }, chip(n), `${n} · ${sizeOf(n)}`);
 function showConn(kind, text) { const c = $("#conn"); c.className = `conn ${kind}`; c.textContent = text; c.hidden = false; }
 function hideConn() { $("#conn").hidden = true; }
 function stateBanner(st) {
@@ -152,20 +156,20 @@ function renderSync(st, latest) {
       : el("p", { class: "bar-note" }, "Automatic sync is off. Add rounds by hand on the Add rounds tab, or configure an authorized source in backend/.env (see README)."));
 }
 
-function renderColourEval(bt) {
-  const card = $("#coloureval"), e = bt && bt.colour_eval;
+function renderSizeEval(bt) {
+  const card = $("#sizeeval"), e = bt && bt.size_eval;
   if (!e) { setBody(card, el("p", { class: "muted" }, "Not computed yet. Press “Re-run validation on all stored data” in the box above.")); return; }
   const k = (label, value, note) => el("div", { class: "kpi" }, el("span", {}, label), el("b", {}, value), el("i", {}, note));
   const table = (head, rows) => el("div", { class: "tablewrap" }, el("table", {}, el("thead", {}, el("tr", {}, head.map(h => el("th", {}, h)))),
     el("tbody", {}, rows.map(r => el("tr", {}, r.map(c => el("td", {}, c)))))));
   const skill = e.brier_skill;
   setBody(card,
-    el("div", { class: "kpis" }, k("Accuracy", pct(e.accuracy), `random guess: 40% · ${e.n} unseen rounds`),
-      k("Brier score", e.brier.toFixed(4), `fair-game prior: ${e.brier_prior.toFixed(4)}`),
-      k("Brier skill", (skill * 100).toFixed(2) + "%", skill > 0 ? "better than the prior" : "not better than the prior"),
+    el("div", { class: "kpis" }, k("Accuracy", pct(e.accuracy), `coin flip: 50% · ${e.n} unseen rounds`),
+      k("Brier score", e.brier.toFixed(4), `fair coin: ${e.brier_prior.toFixed(4)}`),
+      k("Brier skill", (skill * 100).toFixed(2) + "%", skill > 0 ? "better than a coin" : "not better than a coin"),
       k("Calibration error", pct(e.ece), "average gap between confidence and hit rate")),
-    el("p", { class: "bar-note" }, "Prior = Green 40%, Red 40%, Violet 20% (a fair game). Skill below 0% means the probabilities were worse than that."),
-    el("h3", {}, "Per colour"), table(["Colour", "Precision", "Recall", "Rounds"], e.classes.map((c, i) => [c, pct(e.precision[i]), pct(e.recall[i]), String(e.support[i])])),
+    el("p", { class: "bar-note" }, "Skill below 0% means the stated chances were worse than simply saying 50 / 50."),
+    el("h3", {}, "Per class"), table(["Class", "Precision", "Recall", "Rounds"], e.classes.map((c, i) => [c, pct(e.precision[i]), pct(e.recall[i]), String(e.support[i])])),
     el("h3", {}, "Confusion matrix (rows = actual, columns = picked)"), table(["", ...e.classes], e.confusion.map((r, i) => [e.classes[i], ...r.map(String)])),
     el("h3", {}, "Calibration (lowest to highest confidence)"), table(["Rounds", "Average confidence", "Actually correct"], e.calibration.map(b => [String(b.n), pct(b.mean_confidence), pct(b.observed_accuracy)])));
 }
@@ -178,7 +182,7 @@ async function loadDash() {
     perfCache = perf; renderNext(p, perf, stats); lastLatest = r.results[0] || null;
     lastSeen = `${lastLatest ? lastLatest.seq : 0}|${sync ? sync.expected_next_round : "-"}`;
     if (sync) { renderSync(sync, lastLatest); stateBanner(sync); } else hideConn();
-    clear($("#strip")).append(...r.results.slice().reverse().map(x => dot(x.number)));
+    clear($("#strip")).append(...r.results.slice().reverse().map(x => chip(x.number)));
     $("#updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
   } catch (e) { showConn("bad", `Cannot load data: ${e.message}. Showing the last data received.`); }
 }
@@ -200,17 +204,17 @@ async function startPolling() {
   setInterval(poll, pollMs);
 }
 
-function renderColourAnalysis(c) {
+function renderSizeAnalysis(c) {
   const tbl = (head, rows) => el("div", { class: "tablewrap" }, el("table", {}, el("thead", {}, el("tr", {}, head.map(h => el("th", {}, h)))),
     el("tbody", {}, rows.map(r => el("tr", {}, r.map(x => el("td", {}, x)))))));
   const W = Object.values(c.windows);
-  setBody($("#colour-windows"), tbl(["Rounds", "Green", "Red", "Violet", "p vs fair game"],
-    [["all " + c.n, ...c.overall_share.map(pct), "—"], ...W.map(w => ["last " + w.n, ...w.share.map(pct), w.p_vs_fair == null ? "too few" : w.p_vs_fair.toFixed(3)])]),
-    el("p", { class: "bar-note" }, "Fair game = Green 40%, Red 40%, Violet 20%. A p-value under 0.05 is unusual, but with several windows checked one or two are expected by chance. A colour that has been absent for a while is not “due”."));
+  setBody($("#size-windows"), tbl(["Rounds", "Small", "Big", "p vs fair coin"],
+    [["all " + c.n, ...c.overall_share.map(pct), "—"], ...W.map(w => ["last " + w.n, ...w.share.map(pct), w.p_vs_fair.toFixed(3)])]),
+    el("p", { class: "bar-note" }, "A fair game gives Big 50% / Small 50%. A p-value under 0.05 is unusual, but with several windows checked one or two are expected by chance. A side that has been absent for a while is not “due”."));
   const t = c.transitions, st = c.streaks;
-  setBody($("#colour-trans"), tbl(["After ↓ / next →", ...c.classes], t.probabilities.map((row, i) => [c.classes[i], ...(row || [null, null, null]).map((v, j) => `${pct(v)} (${t.counts[i][j]})`)])),
+  setBody($("#size-trans"), tbl(["After ↓ / next →", ...c.classes], t.probabilities.map((row, i) => [c.classes[i], ...(row || [null, null]).map((v, j) => `${pct(v)} (${t.counts[i][j]})`)])),
     el("p", { class: "bar-note" }, t.p_independent == null ? "Not enough data for an independence test."
-      : `Independence test p = ${t.p_independent.toFixed(3)} — ${t.p_independent < 0.05 ? "the next colour may depend on the previous one; check it on new data before trusting it" : "no evidence that the next colour depends on the previous one"}.`),
+      : `Independence test p = ${t.p_independent.toFixed(3)} — ${t.p_independent < 0.05 ? "the next side may depend on the previous one; check it on new data before trusting it" : "no evidence that the next side depends on the previous one"}.`),
     el("p", { class: "bar-note" }, `Current streak: ${st.current.length} × ${st.current.colour}. Longest streaks: ${Object.entries(st.longest).map(([k, v]) => `${k} ${v}`).join(", ")}.`));
 }
 
@@ -219,9 +223,9 @@ let histOffset = 0; const PAGE = 25;
 async function loadHistory(reset) {
   if (reset) { histOffset = 0; clear($("#hist tbody")); }
   const h = await api(`/api/prediction/history?limit=${PAGE}&offset=${histOffset}`); histOffset += h.predictions.length;
-  $("#hist tbody").append(...h.predictions.map(r => el("tr", {}, el("td", {}, r.round), el("td", {}, pill(r.color)),
-    el("td", {}, r.actual == null ? "—" : pill(GROUP(r.actual), `${GROUP(r.actual)} (${r.actual})`)),
-    el("td", {}, r.actual == null ? el("span", { class: "pend" }, "PENDING") : r.color_hit ? el("span", { class: "ok" }, "HIT ✓") : el("span", { class: "no" }, "MISS ✗")))));
+  $("#hist tbody").append(...h.predictions.map(r => el("tr", {}, el("td", {}, r.round), el("td", {}, sizeChip(r.size)),
+    el("td", {}, r.actual == null ? "—" : el("span", { class: "pill" }, chip(r.actual), sizeOf(r.actual))),
+    el("td", {}, r.actual == null ? el("span", { class: "pend" }, "PENDING") : r.bs_hit ? el("span", { class: "ok" }, "HIT ✓") : el("span", { class: "no" }, "MISS ✗")))));
   $("#more").style.display = histOffset >= h.total ? "none" : "";
 }
 
@@ -254,7 +258,7 @@ function runBtn() {
     b.disabled = true; try { await api("/api/backtest/run", { method: "POST" }); b.textContent = "Running… (1–2 min)"; pollStatus(); } catch (e) { b.disabled = false; alert(e.message); } } }, "Re-run validation on all stored data");
   return b;
 }
-async function loadPerf() { perfCache = await api("/api/model-performance"); renderPerf(perfCache); renderColourEval(perfCache.backtest); }
+async function loadPerf() { perfCache = await api("/api/model-performance"); renderPerf(perfCache); renderSizeEval(perfCache.backtest); }
 
 /* ---------------------------------------------------------------- analysis */
 let statsCache = null;
@@ -274,7 +278,7 @@ async function loadAnalysis() {
     el("tbody", {}, Object.values(a.tests).map(t => el("tr", {}, el("td", {}, t.name), el("td", {}, t.p != null ? t.p.toFixed(3) : `${t.value.toFixed(3)} (±${t.band.toFixed(3)})`),
       el("td", {}, t.verdict || (t.within_band ? "consistent with random" : "unusual - verify data"), t.note ? el("div", { class: "muted", style: "font-size:11px" }, t.note) : null)))))),
     el("p", { class: "bar-note" }, a.interpretation), el("div", { id: "tests" }));
-  if (a.colour && a.colour.windows) renderColourAnalysis(a.colour);
+  if (a.size && a.size.windows) renderSizeAnalysis(a.size);
   const q = a.data_quality;
   clear($("#dq")).append(el("dl", { class: "kv" }, ...Object.entries({ "Total records": q.total, "Unique period IDs": q.unique_periods ?? "—", "Missing period IDs": q.missing_period ?? "—", "Missing timestamps": q.missing_timestamp ?? "—",
     "Duplicate periods": q.duplicate_periods ?? "—", "Chronological (by period)": q.chronological == null ? "cannot verify (no period IDs)" : q.chronological ? "yes" : "NO", "Longest same-number streak": a.max_same_number_streak }).flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)])));
