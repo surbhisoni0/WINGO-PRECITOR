@@ -34,7 +34,11 @@ let API_KEY = () => $("#key").value.trim();
 async function api(path, opts = {}) {
   const headers = { ...(opts.headers || {}) };
   if (opts.method === "POST" && API_KEY()) headers["X-API-Key"] = API_KEY();
-  const r = await fetch(path, { ...opts, headers });
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), opts.timeoutMs || 60000);
+  let r;
+  try { r = await fetch(path, { ...opts, headers, signal: ctl.signal, cache: "no-store" }); }
+  catch (e) { throw new Error(e && e.name === "AbortError" ? "the server did not answer in time" : "network error"); }
+  finally { clearTimeout(timer); }
   let body = null;
   try { body = await r.json(); } catch (_) { /* non-JSON */ }
   if (!r.ok) {
@@ -73,6 +77,119 @@ function lineChart(host, series, emptyMsg) {
   clear(host).append(s, el("div", { class: "legend" }, series.map(sr => el("span", {}, el("i", { style: `background:${sr.color}` }), sr.name)), el("span", {}, "y-axis: points above (+) or below (−) the random baseline")));
 }
 
+/* ---------------------------------------------------------------- period clock
+   The SERVER decides which round is next and whether the schedule is verified (/api/clock). The browser only converts the
+   server's absolute end-of-round timestamp into a countdown using a measured server-clock offset. It never advances a period
+   number by itself: a round counts only once its result is confirmed by the server. */
+const CLOCK = { data: null, samples: [], failures: 0, lastOkAt: null, reconcile: false, timer: null, built: null };
+const fmtClock = ms => { const t = Math.max(0, Math.ceil(ms / 1000)); return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`; };
+const fmtTs = v => { const t = Date.parse(v); return Number.isNaN(t) ? String(v) : new Date(t).toLocaleString(); };
+
+/* offset of the server clock = the sample with the smallest round trip (least network-delay error) */
+function pickOffset(samples) { return samples.length ? samples.reduce((a, b) => (b.rtt < a.rtt ? b : a)).offset : 0; }
+
+/* Everything the UI shows about the countdown, derived from the server snapshot and a server-aligned "now" (ms).
+   Never returns a negative time. 'open' -> 'awaiting_result' when the timer hits zero; the next round starts only when the server confirms. */
+function localCountdown(clock, nowMs) {
+  const c = clock && clock.countdown;
+  if (!c) return { state: "no_data", remainingMs: null };
+  if (c.state === "no_data" || c.state === "unverified") return { state: c.state, remainingMs: null, reason: c.reason };
+  const end = Date.parse(c.round_ends_at);
+  if (Number.isNaN(end)) return { state: "unverified", remainingMs: null, reason: "the server sent an invalid round end time" };
+  const P = ((clock.schedule && clock.schedule.period_seconds) || 60) * 1000;
+  const grace = ((clock.schedule && clock.schedule.late_grace_seconds) || 20) * 1000;
+  const left = end - nowMs;
+  if (left > 0) return { state: "open", remainingMs: left };
+  const overdue = -left, ended = 1 + Math.floor(overdue / P);       // rounds finished since the last CONFIRMED one
+  return { state: ended === 1 && overdue <= grace ? "awaiting_result" : "late", remainingMs: 0, overdueMs: overdue, ended };
+}
+
+/* when to ask the server again (ms): quickly while a result is expected, right after a boundary, backing off on errors */
+function pollDelay({ failures, local, pollMs }) {
+  if (failures > 0) return Math.min(30000, 2000 * 2 ** (failures - 1));
+  if (local.state === "awaiting_result") return 3000;
+  if (local.state === "open") return Math.max(1000, Math.min(pollMs, local.remainingMs + 1500));
+  return pollMs;
+}
+
+const clockKey = d => (d && d.latest_confirmed ? `${d.latest_confirmed.seq}|${d.next_round ? d.next_round.label : "-"}` : "none");
+
+async function fetchClock() {
+  const t0 = Date.now();
+  try {
+    const d = await api("/api/clock", { timeoutMs: 8000 }), t1 = Date.now();
+    CLOCK.samples = [...CLOCK.samples.slice(-5), { rtt: t1 - t0, offset: d.server_epoch_ms - (t0 + t1) / 2 }];
+    CLOCK.data = d; CLOCK.failures = 0; CLOCK.lastOkAt = t1;
+    return d;
+  } catch (e) { CLOCK.failures += 1; throw e; }
+}
+
+function clockView(now = Date.now()) {
+  const d = CLOCK.data, off = CLOCK.failures >= 3 || (typeof navigator !== "undefined" && navigator.onLine === false);
+  if (!d) return CLOCK.failures
+    ? { badge: off ? "Disconnected" : "Reconnecting…", cls: "bad", big: "--:--", note: "Cannot reach the server. Retrying automatically." }
+    : { badge: "Connecting…", cls: "wait", big: "--:--", note: "Waiting for the server. A sleeping server can take up to a minute to wake up." };
+  const lbl = d.next_round ? d.next_round.label : "—", loc = localCountdown(d, now + pickOffset(CLOCK.samples));
+  const stale = CLOCK.failures > 0 ? ` Offline since ${new Date(CLOCK.lastOkAt).toLocaleTimeString()}: whether a newer result exists is unknown.` : "";
+  const conn = CLOCK.failures > 0 ? { badge: off ? "Disconnected" : "Reconnecting…", cls: "bad" } : null;
+  const v = {
+    open: { badge: "Round open", cls: "ok", big: fmtClock(loc.remainingMs), note: `Timer to the end of round ${lbl}. A round only counts once its result is confirmed.` },
+    awaiting_result: { badge: "Awaiting result", cls: "warn", big: "00:00", note: `Timer reached zero. The verified result of round ${lbl} is not confirmed yet.` },
+    late: { badge: "Result overdue", cls: "warn", big: "00:00", note: `The result of round ${lbl} is ${fmtAge(Math.round((loc.overdueMs || 0) / 1000))} overdue; ${loc.ended} round(s) have ended since the last confirmed result. Period numbers do not advance until results are confirmed.` },
+    unverified: { badge: "Timing unverified", cls: "mut", big: "--:--", note: `No countdown: ${loc.reason || (d.schedule && d.schedule.reason) || "the schedule could not be verified"}` },
+    no_data: { badge: "No data", cls: "mut", big: "--:--", note: "No confirmed results are stored yet." },
+  }[loc.state];
+  return conn ? { ...v, ...conn, note: v.note + stale } : v;
+}
+
+function renderClock() {
+  const d = CLOCK.data, card = $("#clock"); if (!card) return;
+  if (!d) { tick(); return; }
+  const lc = d.latest_confirmed, nr = d.next_round, sc = d.schedule || {};
+  const fact = (k, ...v) => el("div", { class: "fact" }, el("span", {}, k), el("div", {}, ...v));
+  const schedLine = sc.verified
+    ? `Schedule verified from the last ${sc.samples} consecutive rounds (timing spread ${sc.spread_seconds}s${sc.outliers ? `, ${sc.outliers} off-schedule timestamp(s) ignored` : ""}). Timestamps are read as ${sc.time_means === "end" ? "draw times" : "round start times"} in ${sc.source_tz}. The countdown follows your data source's timestamps, not the official site's clock.`
+    : `Schedule not verified: ${sc.reason || "unknown"}`;
+  setBody(card,
+    el("div", { class: "facts" },
+      fact("Latest verified result", lc ? [el("b", {}, lc.period_id || "#" + lc.seq), " ", numPill(lc.number)] : "—",
+        lc && lc.timestamp ? el("div", { class: "bar-note" }, fmtTs(lc.timestamp)) : null),
+      fact("Next round", el("b", {}, nr ? nr.label : "—"), nr && nr.id_kind === "sequence" ? el("div", { class: "bar-note" }, "row number: the stored data has no period IDs") : null),
+      fact("Time left", el("div", { class: "cd", id: "cd-big", role: "timer" }, "--:--"))),
+    el("p", { class: "bar-note", id: "cd-note", "aria-live": "polite" }, ""),
+    el("p", { class: "bar-note" }, schedLine));
+  tick();
+}
+
+function tick() {
+  const v = clockView(), set = (id, txt) => { const n = document.getElementById(id); if (n && n.textContent !== txt) n.textContent = txt; };
+  set("cd-big", v.big); set("cd-note", v.note);
+  const b = document.getElementById("cd-badge"); if (b) { b.textContent = v.badge; b.className = `badge ${v.cls}`; }
+  updateEstimateNote();
+  const u = document.getElementById("updated");
+  if (u && CLOCK.lastOkAt) u.textContent = `${CLOCK.failures ? "Last updated" : "Updated"} ${new Date(CLOCK.lastOkAt).toLocaleTimeString()}`;
+}
+
+async function pollOnce() {
+  if (document.hidden) return;                                        // resumes on visibilitychange
+  try {
+    const d = await fetchClock();
+    if (CLOCK.reconcile || (lastSeen !== null && clockKey(d) !== lastSeen)) await refreshAll();   // new result, or we were offline: re-read everything
+    else { renderClock(); }
+  } catch (e) {
+    CLOCK.reconcile = true; tick();
+    showConn("bad", CLOCK.failures >= 3 ? "Disconnected from the server. Showing the last data received; retrying automatically." : "Connection problem. Retrying…");
+  }
+  schedulePoll();
+}
+function schedulePoll() {
+  clearTimeout(CLOCK.timer);
+  if (document.hidden) return;
+  const loc = localCountdown(CLOCK.data, Date.now() + pickOffset(CLOCK.samples));
+  CLOCK.timer = setTimeout(pollOnce, pollDelay({ failures: CLOCK.failures, local: loc, pollMs }));
+}
+function wakeUp() { clearTimeout(CLOCK.timer); CLOCK.reconcile = true; pollOnce(); }     // tab shown again / network back: reconcile now
+
 /* ---------------------------------------------------------------- dashboard (colour-first) */
 let perfCache = null;
 const GROUPS = ["Green", "Red", "Violet"], GROUP_OF = [2, 0, 1, 0, 1, 2, 1, 0, 1, 0];   // same mapping as the backend (index = number)
@@ -98,17 +215,36 @@ const chip = n => el("span", { class: `chip ${sizeOf(n).toLowerCase()}`, title: 
 const sizeChip = sz => el("span", { class: `chip wide ${sz.toLowerCase()}` }, sz);
 function pickSize(sc) { let sm = 0, bg = 0; sc.forEach((v, n) => { if (n >= 5) bg += v; else sm += v; }); return bg > sm ? "Big" : "Small"; }
 
+/* The "round ended" notice is driven by the LIVE clock (tick), not by the moment this card was last rendered, so the estimate
+   can never look current after its round has finished. It only speaks about the round this estimate is bound to. */
+function estimateNote(p) {
+  const kind = p.target_id_kind === "sequence"
+    ? el("p", { class: "bar-note" }, "The stored data has no period IDs, so this is a row number (#…), not an official period.") : null;
+  return [el("div", { id: "est-note", class: "nosig", hidden: true, "data-target": p.target_label }), kind];
+}
+function updateEstimateNote() {
+  const n = document.getElementById("est-note"), d = CLOCK.data; if (!n) return;
+  const lbl = n.dataset.target; let msg = "";
+  if (d && d.next_round && d.next_round.label === lbl) {
+    const st = localCountdown(d, Date.now() + pickOffset(CLOCK.samples)).state;
+    if (st === "awaiting_result" || st === "late") msg = `Round ${lbl} has ended and its verified result is not confirmed yet. This estimate is frozen and will be scored against that result, never replaced.`;
+    else if (st === "unverified") msg = "Round timing is not verified, so this page cannot tell whether this round is still open.";
+  }
+  n.hidden = !msg; if (n.textContent !== msg) n.textContent = msg;
+}
+
 function renderNext(p, perf, stats) {
   const pick = $("#pick"), reality = $("#reality"), models = $("#models");
   if (!p.available) { [pick, reality, models].forEach(c => setBody(c, el("p", { class: "muted" }, p.reason))); return; }
   const sig = p.signal, none = sig.level === "none", bt = perf && perf.backtest, c = bt && bt.consensus.bs;
   setBody(pick,
     el("div", { class: "pickrow" }, el("span", { class: `orb size ${p.size.toLowerCase()} ${none ? "dim" : ""}` }, p.size.toUpperCase()),
-      el("div", {}, el("div", { class: "pickname" }, p.size), el("div", { class: "muted" }, `next round ${p.target_period || "#" + p.target_seq} · Big = 5–9, Small = 0–4`),
+      el("div", {}, el("div", { class: "pickname" }, p.size), el("div", { class: "muted" }, `estimate for round ${p.target_label} · Big = 5–9, Small = 0–4`),
         el("div", { style: "margin-top:8px" }, signalBadge(sig)))),
+    estimateNote(p),
     p.size_probs ? el("div", {}, el("div", { class: "bar-note" }, "Estimated chance (an uncertain estimate, not a validated forecast):"),
       SIZES.map(g => meter(g, p.size_probs[g], g.toLowerCase()))) : null,
-    el("p", { class: "bar-note" }, `Model v${p.engine_version} · trained on ${p.n_history} rounds · built after confirmed round ${p.latest_result ? (p.latest_result.period_id || "#" + p.latest_result.seq) : "—"} · status: ${p.status}${p.created_at ? " · saved " + String(p.created_at).replace("T", " ").slice(0, 19) + " UTC" : ""}`),
+    el("p", { class: "bar-note" }, `Model v${p.engine_version} · trained on ${p.n_history} rounds · built after confirmed round ${p.latest_result ? (p.latest_result.period_id || "#" + p.latest_result.seq) : "—"} · status: ${p.status === "pending" ? "waiting for result" : p.status}${p.created_at ? " · generated " + fmtTs(p.created_at) : ""}`),
     none ? el("div", { class: "nosig" }, el("strong", {}, "No proven edge. "), "On rounds it had not seen, this pick did no better than flipping a coin.") : null,
     el("details", {}, el("summary", { class: "muted" }, "Why this label?"),
       el("ul", { class: "muted" }, (sig.reasons.length ? sig.reasons : ["Evidence rules satisfied — see the Accuracy tab."]).map(r => el("li", {}, r)),
@@ -116,7 +252,6 @@ function renderNext(p, perf, stats) {
     el("p", { class: "bar-note" }, p.disclaimer));
   const live = perf && perf.live.metrics.bs;
   setBody(reality,
-    meter("Your target", 0.8, "t"),
     meter(c ? `Measured on ${c.n} unseen rounds` : "Measured", c && c.rate, "", c ? `95% range ${pct(c.lo)} – ${pct(c.hi)}` : "No test yet — open the Accuracy tab and run the walk-forward test."),
     meter("Coin flip (always Big, or always Small)", 0.5, "b", "what you get with no information at all"),
     live && live.n ? meter(`Live picks (${live.n})`, live.rate, "", live.n < 100 ? "fewer than 100 — too few to mean anything" : null) : null,
@@ -174,34 +309,29 @@ function renderSizeEval(bt) {
     el("h3", {}, "Calibration (lowest to highest confidence)"), table(["Rounds", "Average confidence", "Actually correct"], e.calibration.map(b => [String(b.n), pct(b.mean_confidence), pct(b.observed_accuracy)])));
 }
 
-let lastSeen = null, lastLatest = null, pollMs = 30000;
+let lastSeen = null, lastLatest = null, pollMs = 10000;
 async function loadDash() {
   try {
-    const [p, r, perf, stats, sync] = await Promise.all([api("/api/prediction/next"), api("/api/results?limit=40"), api("/api/model-performance"),
-      api("/api/data/stats").catch(() => null), api("/api/sync/status").catch(() => null)]);
+    const [p, r, perf, stats, sync, clk] = await Promise.all([api("/api/prediction/next"), api("/api/results?limit=40"), api("/api/model-performance"),
+      api("/api/data/stats").catch(() => null), api("/api/sync/status").catch(() => null), fetchClock()]);
     perfCache = perf; renderNext(p, perf, stats); lastLatest = r.results[0] || null;
-    lastSeen = `${lastLatest ? lastLatest.seq : 0}|${sync ? sync.expected_next_round : "-"}`;
+    lastSeen = clockKey(clk); CLOCK.reconcile = false;
     if (sync) { renderSync(sync, lastLatest); stateBanner(sync); } else hideConn();
+    renderClock();
     clear($("#strip")).append(...r.results.slice().reverse().map(x => chip(x.number)));
-    $("#updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
-  } catch (e) { showConn("bad", `Cannot load data: ${e.message}. Showing the last data received.`); }
+  } catch (e) { CLOCK.reconcile = true; tick(); showConn("bad", `Cannot load data: ${e.message}. Showing the last data received.`); }
 }
 async function refreshAll() {
   const b = $("#refresh"); b.disabled = true; b.textContent = "Refreshing…";
   try { await Promise.all([loadStatus(), loadDash()]); } finally { b.disabled = false; b.textContent = "Refresh"; }
 }
-async function poll() {                                     // light check; reloads everything only when something changed
-  if (typeof document !== "undefined" && document.hidden) return;
-  try {
-    const [sync, r] = await Promise.all([api("/api/sync/status"), api("/api/results?limit=1")]);
-    const latest = r.results[0] || null, key = `${latest ? latest.seq : 0}|${sync.expected_next_round}`;
-    if (lastSeen !== null && key !== lastSeen) { await refreshAll(); return; }
-    renderSync(sync, latest || lastLatest); stateBanner(sync);
-  } catch (e) { showConn("bad", "Disconnected from the server. Showing the last data received; retrying automatically."); }
-}
 async function startPolling() {
-  try { const h = await api("/api/health"); pollMs = Math.max(10, h.poll_seconds || 30) * 1000; } catch (_) { /* keep default */ }
-  setInterval(poll, pollMs);
+  try { const h = await api("/api/health", { timeoutMs: 8000 }); pollMs = Math.max(10, h.poll_seconds || 10) * 1000; } catch (_) { /* keep default */ }
+  setInterval(tick, 250);                                             // display only: no network, derived from timestamps
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) wakeUp(); });
+  window.addEventListener("online", wakeUp);
+  window.addEventListener("offline", tick);
+  schedulePoll();
 }
 
 function renderSizeAnalysis(c) {
@@ -223,7 +353,7 @@ let histOffset = 0; const PAGE = 25;
 async function loadHistory(reset) {
   if (reset) { histOffset = 0; clear($("#hist tbody")); }
   const h = await api(`/api/prediction/history?limit=${PAGE}&offset=${histOffset}`); histOffset += h.predictions.length;
-  $("#hist tbody").append(...h.predictions.map(r => el("tr", {}, el("td", {}, r.round), el("td", {}, sizeChip(r.size)),
+  $("#hist tbody").append(...h.predictions.map(r => el("tr", {}, el("td", {}, r.round), el("td", {}, sizeChip(r.size)), el("td", { class: "muted" }, r.created_at ? fmtTs(r.created_at) : "—"),
     el("td", {}, r.actual == null ? "—" : el("span", { class: "pill" }, chip(r.actual), sizeOf(r.actual))),
     el("td", {}, r.actual == null ? el("span", { class: "pend" }, "PENDING") : r.bs_hit ? el("span", { class: "ok" }, "HIT ✓") : el("span", { class: "no" }, "MISS ✗")))));
   $("#more").style.display = histOffset >= h.total ? "none" : "";
@@ -349,3 +479,5 @@ function init() {
   buildPad(); pollStatus(); loadDash(); startPolling();
 }
 if (typeof document !== "undefined" && document.getElementById) init();
+
+if (typeof module !== "undefined" && module.exports) module.exports = { localCountdown, pollDelay, pickOffset, fmtClock, clockKey };
