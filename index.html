@@ -19,8 +19,9 @@
 </nav>
 <main>
 <section id="tab-dash" class="tab on">
+  <article class="card" id="clock"><h2>Round status <small>verified by the server</small><span id="cd-badge" class="badge wait">Connecting…</span></h2><div class="skeleton">loading…</div></article>
   <div class="grid two">
-    <article class="card hero" id="pick"><h2>Next round: Big or Small?</h2><div class="skeleton">loading…</div></article>
+    <article class="card hero" id="pick"><h2>Experimental estimate <small>not a forecast</small></h2><div class="skeleton">loading…</div></article>
     <article class="card" id="reality"><h2>Reality check <small>Big/Small accuracy on rounds the model had not seen</small></h2><div class="skeleton">loading…</div></article>
   </div>
   <article class="card" id="sync"><h2>Live data sync <small>server-side, works with the browser closed</small></h2><div class="skeleton">loading…</div></article>
@@ -32,7 +33,7 @@
 </section>
 <section id="tab-history" class="tab">
   <article class="card"><h2>Prediction history</h2>
-    <div class="tablewrap"><table id="hist"><thead><tr><th>Round</th><th>Picked</th><th>Actual</th><th>Result</th></tr></thead><tbody></tbody></table></div>
+    <div class="tablewrap"><table id="hist"><thead><tr><th>Round</th><th>Estimate</th><th>Generated</th><th>Actual (verified)</th><th>Result</th></tr></thead><tbody></tbody></table></div>
     <button id="more" class="btn ghost">Load more</button></article>
 </section>
 <section id="tab-perf" class="tab">
