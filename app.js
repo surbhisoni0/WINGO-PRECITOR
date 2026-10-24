@@ -319,6 +319,7 @@ async function loadDash() {
     if (sync) { renderSync(sync, lastLatest); stateBanner(sync); } else hideConn();
     renderClock();
     clear($("#strip")).append(...r.results.slice().reverse().map(x => chip(x.number)));
+    if ($("#tab-trends").classList.contains("on")) loadTrends().catch(() => {});      // new round arrived while this tab is open
   } catch (e) { CLOCK.reconcile = true; tick(); showConn("bad", `Cannot load data: ${e.message}. Showing the last data received.`); }
 }
 async function refreshAll() {
@@ -414,6 +415,84 @@ async function loadAnalysis() {
     "Duplicate periods": q.duplicate_periods ?? "—", "Chronological (by period)": q.chronological == null ? "cannot verify (no period IDs)" : q.chronological ? "yes" : "NO", "Longest same-number streak": a.max_same_number_streak }).flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)])));
 }
 
+/* ---------------------------------------------------------------- trends (descriptive statistics of STORED results only)
+   Everything below is computed in the browser from /api/results. Nothing is invented and nothing here predicts anything. */
+function runsOf(keys) {                                   // keys oldest -> newest; returns columns of equal consecutive keys
+  const cols = [];
+  for (const k of keys) { const c = cols[cols.length - 1]; if (c && c.key === k) c.len += 1; else cols.push({ key: k, len: 1 }); }
+  return cols;
+}
+function streakInfo(keys) {                               // current streak (at the newest end) and longest streak per key
+  const cols = runsOf(keys), longest = {};
+  cols.forEach(c => { longest[c.key] = Math.max(longest[c.key] || 0, c.len); });
+  const cur = cols[cols.length - 1];
+  return { current: cur ? { key: cur.key, len: cur.len } : null, longest };
+}
+/* rows: newest first, each {number}. Returns null when there is nothing to describe. */
+function trendStats(rows) {
+  const n = rows.length; if (!n) return null;
+  const nums = rows.map(r => r.number), oldest = nums.slice().reverse();
+  const freq = Array(10).fill(0), missing = Array(10).fill(null);
+  nums.forEach((v, i) => { freq[v] += 1; if (missing[v] === null) missing[v] = i; });      // i = draws since it last appeared
+  const count = f => nums.filter(f).length, big = count(v => v >= 5), odd = count(v => v % 2 === 1);
+  const order = [...Array(10).keys()].sort((a, b) => freq[b] - freq[a] || a - b);
+  const maxF = freq[order[0]], minF = freq[order[9]];
+  return {
+    n, freq, missing, big, small: n - big, odd, even: n - odd,
+    green: count(v => v % 2 === 1), red: count(v => v % 2 === 0), violet: count(v => v === 0 || v === 5),
+    hot: order.filter(v => freq[v] === maxF), cold: order.filter(v => freq[v] === minF),
+    sizeStreak: streakInfo(oldest.map(v => (v >= 5 ? "Big" : "Small"))),
+    parityStreak: streakInfo(oldest.map(v => (v % 2 === 1 ? "Odd" : "Even"))),
+    colourStreak: streakInfo(oldest.map(v => (v % 2 === 1 ? "Green" : "Red"))),
+    sizeRuns: runsOf(oldest.map(v => (v >= 5 ? "Big" : "Small"))),
+    colourRuns: runsOf(oldest.map(v => (v % 2 === 1 ? "Green" : "Red"))),
+  };
+}
+
+function trendChart(host, rowsNewestFirst) {
+  const pts = rowsNewestFirst.slice(0, 40).reverse();
+  if (!pts.length) { clear(host).append(el("p", { class: "muted" }, "No results stored yet.")); return; }
+  const W = 600, H = 200, L = 24, B = 14, T = 10, n = pts.length, x = i => L + (W - L - 8) * (n === 1 ? .5 : i / (n - 1)), y = v => T + (H - T - B) * (1 - v / 9);
+  const s = svg("svg", { viewBox: `0 0 ${W} ${H}`, width: "100%", role: "img", "aria-label": `Winning number over the last ${n} rounds` });
+  [0, 5, 9].forEach(v => s.append(svg("line", { x1: L, x2: W, y1: y(v), y2: y(v), stroke: "#1f2c4d", "stroke-dasharray": v === 5 ? "4 4" : "" }), svg("text", { x: 4, y: y(v) + 3 }, String(v))));
+  s.append(svg("polyline", { fill: "none", stroke: "#9a9486", "stroke-width": 1.5, points: pts.map((p, i) => `${x(i)},${y(p.number)}`).join(" ") }));
+  pts.forEach((p, i) => { const c = svg("circle", { cx: x(i), cy: y(p.number), r: 4.5, fill: barColor(p.number) }); c.append(svg("title", {}, `${p.period_id || "#" + p.seq} · ${p.number} · ${sizeOf(p.number)}`)); s.append(c); });
+  clear(host).append(s);
+}
+
+function roadmap(host, runs, colorOf) {
+  if (!runs.length) { clear(host).append(el("p", { class: "muted" }, "No results stored yet.")); return; }
+  clear(host).append(el("div", { class: "road" }, runs.map(c => el("div", { class: "rcol", title: `${c.key} × ${c.len}` },
+    Array.from({ length: c.len }, () => el("i", { style: `background:${colorOf(c.key)}` }))))));
+}
+
+let trendWin = 100;
+async function loadTrends() {
+  const r = await api(`/api/results?limit=${trendWin}`), rows = r.results, t = trendStats(rows);
+  const card = id => document.getElementById(id);
+  if (!t) { ["tr-sum", "tr-trend", "tr-missing", "tr-pat", "tr-road", "tr-table"].forEach(id => setBody(card(id), el("p", { class: "muted" }, "No results stored yet."))); return; }
+  const share = (a, b) => `${a} (${pct(a / t.n)}) · ${b} (${pct(b / t.n)})`;
+  setBody(card("tr-sum"), el("dl", { class: "kv" },
+    el("dt", {}, "Rounds in window"), el("dd", {}, `${t.n}${r.total > t.n ? ` of ${r.total} stored` : ""}`),
+    el("dt", {}, "Big · Small"), el("dd", {}, share(t.big, t.small)), el("dt", {}, "Odd · Even"), el("dd", {}, share(t.odd, t.even)),
+    el("dt", {}, "Green · Red · Violet"), el("dd", {}, `${t.green} · ${t.red} · ${t.violet} (0 and 5 also count as violet)`)),
+    el("p", { class: "bar-note" }, "Descriptive counts only. In a fair game each side is expected near 50% over time; short-window swings are normal and do not predict the next round."));
+  trendChart(card("tr-trend-chart"), rows);
+  setBody(card("tr-missing"), el("div", { class: "tablewrap" }, el("table", {}, el("thead", {}, el("tr", {}, ["Number", "Seen", "Share", "Rounds since last seen"].map(h => el("th", {}, h)))),
+    el("tbody", {}, [...Array(10).keys()].map(v => el("tr", {}, el("td", {}, ball(v, "sm")), el("td", {}, t.freq[v]), el("td", {}, pct(t.freq[v] / t.n)),
+      el("td", {}, t.missing[v] === null ? `more than ${t.n}` : t.missing[v] === 0 ? "latest round" : t.missing[v]))))) ),
+    el("p", { class: "bar-note" }, "A number that has been absent for a while is not “due”: every round is an independent draw."));
+  const sk = (label, s) => [el("dt", {}, label), el("dd", {}, s.current ? `${s.current.len} × ${s.current.key} now · longest ${Object.entries(s.longest).map(([k, v]) => `${k} ${v}`).join(", ")}` : "—")];
+  setBody(card("tr-pat"), el("dl", { class: "kv" }, sk("Big / Small streak", t.sizeStreak), sk("Odd / Even streak", t.parityStreak), sk("Green / Red streak", t.colourStreak),
+    el("dt", {}, "Most frequent"), el("dd", {}, t.hot.join(", ")), el("dt", {}, "Least frequent"), el("dd", {}, t.cold.join(", "))),
+    el("p", { class: "bar-note" }, "“Most / least frequent” describe this window only."));
+  const sizeCol = k => (k === "Big" ? "#2f6f73" : "#b5812b"), colCol = k => (k === "Green" ? "#22a45d" : "#d63b3b");
+  roadmap(card("tr-road-size"), t.sizeRuns.slice(-30), sizeCol); roadmap(card("tr-road-col"), t.colourRuns.slice(-30), colCol);
+  setBody(card("tr-table"), el("div", { class: "tablewrap" }, el("table", {}, el("thead", {}, el("tr", {}, ["Round", "Number", "Big / Small", "Colour", "Time"].map(h => el("th", {}, h)))),
+    el("tbody", {}, rows.slice(0, 20).map(x => el("tr", {}, el("td", {}, x.period_id || "#" + x.seq), el("td", {}, ball(x.number, "sm")), el("td", {}, sizeChip(sizeOf(x.number))),
+      el("td", {}, COLOR_DETAIL[x.number]), el("td", { class: "muted" }, x.timestamp ? fmtTs(x.timestamp) : "—")))))));
+}
+
 /* ---------------------------------------------------------------- add result / import */
 let picked = null;
 function buildPad() {
@@ -471,13 +550,14 @@ function init() {
     const t = e.target.closest("button"); if (!t) return;
     document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b === t));
     document.querySelectorAll(".tab").forEach(s => s.classList.toggle("on", s.id === "tab-" + t.dataset.tab));
-    ({ history: () => loadHistory(true), perf: loadPerf, analysis: loadAnalysis })[t.dataset.tab]?.();
+    ({ history: () => loadHistory(true), trends: loadTrends, perf: loadPerf, analysis: loadAnalysis })[t.dataset.tab]?.();
   });
   $("#more").onclick = () => loadHistory(false);
   $("#win").onchange = renderRecentFreq;
+  $("#trwin").onchange = () => { trendWin = Number($("#trwin").value); loadTrends(); };
   $("#refresh").onclick = () => refreshAll();
   buildPad(); pollStatus(); loadDash(); startPolling();
 }
 if (typeof document !== "undefined" && document.getElementById) init();
 
-if (typeof module !== "undefined" && module.exports) module.exports = { localCountdown, pollDelay, pickOffset, fmtClock, clockKey };
+if (typeof module !== "undefined" && module.exports) module.exports = { localCountdown, pollDelay, pickOffset, fmtClock, clockKey, trendStats, runsOf, streakInfo };
