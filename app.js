@@ -96,7 +96,12 @@ function localCountdown(clock, nowMs) {
   if (c.state === "no_data" || c.state === "unverified") return { state: c.state, remainingMs: null, reason: c.reason };
   const end = Date.parse(c.round_ends_at);
   if (Number.isNaN(end)) return { state: "unverified", remainingMs: null, reason: "the server sent an invalid round end time" };
-  const P = ((clock.schedule && clock.schedule.period_seconds) || 60) * 1000;
+  const P = (c.period_seconds || (clock.schedule && clock.schedule.period_seconds) || 60) * 1000;
+  if (c.state === "assumed") {                       // OPT-IN assumed schedule: rolls over every period by itself, never "verified"
+    let left = end - nowMs;
+    if (left <= 0) left += (Math.floor(-left / P) + 1) * P;
+    return { state: "assumed", remainingMs: left };
+  }
   const grace = ((clock.schedule && clock.schedule.late_grace_seconds) || 20) * 1000;
   const left = end - nowMs;
   if (left > 0) return { state: "open", remainingMs: left };
@@ -136,6 +141,7 @@ function clockView(now = Date.now()) {
     open: { badge: "Round open", cls: "ok", big: fmtClock(loc.remainingMs), note: `Timer to the end of round ${lbl}. A round only counts once its result is confirmed.` },
     awaiting_result: { badge: "Awaiting result", cls: "warn", big: "00:00", note: `Timer reached zero. The verified result of round ${lbl} is not confirmed yet.` },
     late: { badge: "Result overdue", cls: "warn", big: "00:00", note: `The result of round ${lbl} is ${fmtAge(Math.round((loc.overdueMs || 0) / 1000))} overdue; ${loc.ended} round(s) have ended since the last confirmed result. Period numbers do not advance until results are confirmed.` },
+    assumed: { badge: "Assumed schedule", cls: "warn", big: fmtClock(loc.remainingMs), note: "NOT VERIFIED: this timer counts to every full minute on the clock, not to your data source. It may not match the game's own timer. Connect a live source (SYNC_* in .env) to verify it." },
     unverified: { badge: "Timing unverified", cls: "mut", big: "--:--", note: `No countdown: ${loc.reason || (d.schedule && d.schedule.reason) || "the schedule could not be verified"}` },
     no_data: { badge: "No data", cls: "mut", big: "--:--", note: "No confirmed results are stored yet." },
   }[loc.state];
@@ -222,12 +228,21 @@ function estimateNote(p) {
     ? el("p", { class: "bar-note" }, "The stored data has no period IDs, so this is a row number (#…), not an official period.") : null;
   return [el("div", { id: "est-note", class: "nosig", hidden: true, "data-target": p.target_label }), kind];
 }
+/* Assumed schedule only: results do not arrive by themselves, so when the assumed minute rolls over the estimate stays frozen.
+   `track` remembers when the page first saw this estimate and the end of the assumed round it was seen in. */
+let EST_TRACK = { label: null, end: null };
+function assumedNote(track, label, nowMs, remainingMs) {
+  const t = track.label === label ? track : { label, end: nowMs + remainingMs };
+  const rolled = nowMs >= t.end;
+  return { track: t, msg: rolled ? `A new minute has started, but the result of round ${label} has not been added. This Big/Small estimate is frozen and changes only after that result arrives (live sync, or the Add rounds tab).` : "" };
+}
 function updateEstimateNote() {
   const n = document.getElementById("est-note"), d = CLOCK.data; if (!n) return;
   const lbl = n.dataset.target; let msg = "";
   if (d && d.next_round && d.next_round.label === lbl) {
     const st = localCountdown(d, Date.now() + pickOffset(CLOCK.samples)).state;
-    if (st === "awaiting_result" || st === "late") msg = `Round ${lbl} has ended and its verified result is not confirmed yet. This estimate is frozen and will be scored against that result, never replaced.`;
+    if (st === "assumed") { const loc = localCountdown(d, Date.now() + pickOffset(CLOCK.samples)), r = assumedNote(EST_TRACK, lbl, Date.now() + pickOffset(CLOCK.samples), loc.remainingMs); EST_TRACK = r.track; msg = r.msg; }
+    else if (st === "awaiting_result" || st === "late") msg = `Round ${lbl} has ended and its verified result is not confirmed yet. This estimate is frozen and will be scored against that result, never replaced.`;
     else if (st === "unverified") msg = "Round timing is not verified, so this page cannot tell whether this round is still open.";
   }
   n.hidden = !msg; if (n.textContent !== msg) n.textContent = msg;
@@ -560,4 +575,4 @@ function init() {
 }
 if (typeof document !== "undefined" && document.getElementById) init();
 
-if (typeof module !== "undefined" && module.exports) module.exports = { localCountdown, pollDelay, pickOffset, fmtClock, clockKey, trendStats, runsOf, streakInfo };
+if (typeof module !== "undefined" && module.exports) module.exports = { localCountdown, pollDelay, pickOffset, fmtClock, clockKey, trendStats, runsOf, streakInfo, assumedNote };
