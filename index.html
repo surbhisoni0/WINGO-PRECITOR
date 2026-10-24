@@ -14,7 +14,7 @@
 <div class="banner" role="note"><strong>Honest note.</strong> The pick below is a statistical guess. Testing on unseen rounds shows it is no better than guessing a colour at random, so treat it as a coin flip. No tool can guarantee a win; this one places no bets.</div>
 <div id="conn" class="conn" role="status" hidden></div>
 <nav class="tabs" id="tabs">
-  <button data-tab="dash" class="on">Predict</button><button data-tab="history">History</button>
+  <button data-tab="dash" class="on">Predict</button><button data-tab="trends">Trends</button><button data-tab="history">History</button>
   <button data-tab="perf">Accuracy</button><button data-tab="analysis">Data</button><button data-tab="add">Add rounds</button>
 </nav>
 <main>
@@ -30,6 +30,17 @@
     <article class="card" id="mix"><h2>Big / Small mix <small>share of all stored rounds</small></h2><div class="skeleton">loading…</div></article>
     <article class="card" id="models"><h2>Each model's pick</h2><div class="skeleton">loading…</div></article>
   </div>
+</section>
+<section id="tab-trends" class="tab">
+  <article class="card" id="tr-sum"><h2>Summary <select id="trwin" aria-label="Window"><option>40</option><option selected>100</option><option>200</option><option>500</option></select><small>last N stored rounds</small></h2><div class="skeleton">open this tab to load</div></article>
+  <article class="card" id="tr-trend"><h2>Number trend <small>last 40 rounds, newest on the right</small></h2><div id="tr-trend-chart"></div></article>
+  <div class="grid two">
+    <article class="card" id="tr-missing"><h2>Frequency &amp; rounds since last seen</h2><div class="skeleton">loading…</div></article>
+    <article class="card" id="tr-pat"><h2>Current patterns</h2><div class="skeleton">loading…</div></article>
+  </div>
+  <article class="card" id="tr-road"><h2>Trend roadmap <small>each column is a run of the same result · newest on the right</small></h2>
+    <h3>Big / Small</h3><div id="tr-road-size"></div><h3>Green / Red</h3><div id="tr-road-col"></div></article>
+  <article class="card" id="tr-table"><h2>Latest results</h2><div class="skeleton">loading…</div></article>
 </section>
 <section id="tab-history" class="tab">
   <article class="card"><h2>Prediction history</h2>
