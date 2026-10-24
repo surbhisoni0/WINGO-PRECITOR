@@ -83,3 +83,9 @@ dl.kv{margin:0}
 .fact>span{display:block;font-size:12.5px;color:var(--mut);margin-bottom:4px}.fact b{font-size:17px;overflow-wrap:anywhere}
 .cd{font:700 34px/1.1 ui-monospace,"Cascadia Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums;letter-spacing:.02em}
 @media(max-width:560px){.cd{font-size:28px}}
+
+/* ---- trends tab ---- */
+.road{display:flex;gap:6px;overflow-x:auto;padding:4px 0 8px;align-items:flex-start}
+.rcol{display:flex;flex-direction:column;gap:3px;flex:none}.rcol i{width:14px;height:14px;border-radius:50%;display:block}
+.card h2 select{margin-left:auto}
+#tr-table .ball.sm{--s:26px}#tr-missing .ball.sm{--s:26px}
